@@ -1,3 +1,5 @@
+pub mod config;
+
 use tokio::{io, net::TcpStream};
 
 pub fn forward(from: TcpStream, to: TcpStream) {
