@@ -1,14 +1,9 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+use tokio::{io, net::TcpStream};
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+pub fn forward(from: TcpStream, to: TcpStream) {
+    tokio::spawn(async move {
+        let (mut fr, mut fw) = from.into_split();
+        let (mut tr, mut tw) = to.into_split();
+        tokio::try_join!(io::copy(&mut fr, &mut tw), io::copy(&mut tr, &mut fw))
+    });
 }
