@@ -4,3 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+common = { path = "../common" }
+salvo = { path = "../salvo/crates/salvo", features = ["serve-static"] }
+salvo_core = { path = "../salvo/crates/core" }
+
+tokio = { workspace = true }
+derive_more = { workspace = true }
+async-channel = { workspace = true }

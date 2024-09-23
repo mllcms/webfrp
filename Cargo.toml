@@ -1,5 +1,6 @@
 [workspace]
 members = ["client", "common", "server", "webfrp"]
+exclude = ["salvo"]
 resolver = "2"
 
 [workspace.dependencies]
