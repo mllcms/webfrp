@@ -1,0 +1,4 @@
+max_width = 120
+struct_lit_width = 60
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"

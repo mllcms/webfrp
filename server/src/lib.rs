@@ -1,15 +1,14 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use async_channel::{unbounded, Receiver, Sender};
+use common::{config::Config, connect::Connect, forward, message::Message};
 use derive_more::derive::Deref;
 use tokio::{
     io::{self, AsyncReadExt},
     net::TcpListener,
+    task::JoinSet,
     time::sleep,
 };
-use tokio::task::JoinSet;
-
-use common::{config::Config, connect::Connect, forward, message::Message};
 
 pub struct ServerInner {
     config: Config,
@@ -71,19 +70,26 @@ pub async fn master(server: Server, mut connect: Connect) {
             let mut join_set = JoinSet::new();
             join_set.spawn(run_worker(server.clone(), listen));
             tokio::spawn(async move {
-                connect.split("⇨ Master", join_set,|mut r| async move {
-                    let mut buf = [0; 256];
-                    while let Ok(true) = r.read(&mut buf).await.map(|n| n > 1) {}
-                    Err(io::Error::other("Connect Disconnected"))
-                }, |mut w|async move {
-                    let master_rx = server.master_rx.clone();
-                    loop {
-                        tokio::select! {
-                            Ok(msg) = master_rx.recv() =>msg.send(&mut w).await?,
-                            _ = sleep(server.config.heartbeat) =>Message::Ping.send(&mut w).await?
-                        }
-                    }
-                }).await;
+                connect
+                    .split(
+                        "⇨ Master",
+                        join_set,
+                        |mut r| async move {
+                            let mut buf = [0; 256];
+                            while let Ok(true) = r.read(&mut buf).await.map(|n| n > 1) {}
+                            Err(io::Error::other("Connect Disconnected"))
+                        },
+                        |mut w| async move {
+                            let master_rx = server.master_rx.clone();
+                            loop {
+                                tokio::select! {
+                                    Ok(msg) = master_rx.recv() =>msg.send(&mut w).await?,
+                                    _ = sleep(server.config.heartbeat) =>Message::Ping.send(&mut w).await?
+                                }
+                            }
+                        },
+                    )
+                    .await;
             });
         }
         _ => {
