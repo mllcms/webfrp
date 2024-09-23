@@ -20,7 +20,6 @@ pub struct Connect {
     pub tcp: TcpStream,
     pub addr: SocketAddr,
     pub instant: Instant,
-    pub join_set: JoinSet<io::Result<()>>,
 }
 
 impl From<(TcpStream, SocketAddr)> for Connect {
@@ -31,12 +30,8 @@ impl From<(TcpStream, SocketAddr)> for Connect {
 
 impl Connect {
     pub fn new(tcp: TcpStream, addr: SocketAddr) -> Self {
-        Self {
-            tcp,
-            addr,
-            instant: Instant::now(),
-            join_set: JoinSet::new(),
-        }
+        let instant = Instant::now();
+        Self { tcp, addr, instant }
     }
 
     pub fn is_timeout(&self, timeout: Duration) -> bool {
@@ -60,10 +55,12 @@ impl Connect {
         self.tcp.flush().await
     }
 
-    /// 等到 join_set 第一个任务退出所有任务都退出
+    /// 读写分离
+    /// 传入 join_set 第一个任务退出所有任务都退出
     pub async fn split<R, W>(
-        mut self,
-        name: String,
+        self,
+        name: &str,
+        mut join_set: JoinSet<io::Result<()>>,
         r: impl FnOnce(OwnedReadHalf) -> R,
         w: impl FnOnce(OwnedWriteHalf) -> W,
     ) where
@@ -71,9 +68,9 @@ impl Connect {
         W: Future<Output = io::Result<()>> + Send + 'static,
     {
         let (reader, writer) = self.tcp.into_split();
-        self.join_set.spawn(r(reader));
-        self.join_set.spawn(w(writer));
-        if let Some(Err(err)) = self.join_set.join_next().await {
+        join_set.spawn(r(reader));
+        join_set.spawn(w(writer));
+        if let Some(Err(err)) = join_set.join_next().await {
             println!("│{:21?}│ {name} {err}", self.addr)
         }
     }
