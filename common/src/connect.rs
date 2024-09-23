@@ -71,7 +71,7 @@ impl Connect {
         join_set.spawn(r(reader));
         join_set.spawn(w(writer));
         if let Some(Err(err)) = join_set.join_next().await {
-            println!("│{:21?}│ {name} {err}", self.addr)
+            eprintln!("│{:21?}│ {name} {err}", self.addr)
         }
     }
 }
