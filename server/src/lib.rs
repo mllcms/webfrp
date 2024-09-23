@@ -69,31 +69,27 @@ pub async fn master(server: Server, mut connect: Connect) {
 
             let mut join_set = JoinSet::new();
             join_set.spawn(run_worker(server.clone(), listen));
-            tokio::spawn(async move {
-                connect
-                    .split(
-                        "⇨ Master",
-                        join_set,
-                        |mut r| async move {
-                            let mut buf = [0; 256];
-                            while let Ok(true) = r.read(&mut buf).await.map(|n| n > 1) {}
-                            Err(io::Error::other("Connect Disconnected"))
-                        },
-                        |mut w| async move {
-                            let master_rx = server.master_rx.clone();
-                            loop {
-                                tokio::select! {
-                                    Ok(msg) = master_rx.recv() =>msg.send(&mut w).await?,
-                                    _ = sleep(server.config.heartbeat) =>Message::Ping.send(&mut w).await?
-                                }
-                            }
-                        },
-                    )
-                    .await;
-            });
+            tokio::spawn(connect.split(
+                "⇨ Master",
+                join_set,
+                |mut r| async move {
+                    let mut buf = [0; 256];
+                    while let Ok(true) = r.read(&mut buf).await.map(|n| n > 1) {}
+                    Err(io::Error::other("Connect Disconnected"))
+                },
+                |mut w| async move {
+                    let master_rx = server.master_rx.clone();
+                    loop {
+                        tokio::select! {
+                            Ok(msg) = master_rx.recv() =>msg.send(&mut w).await?,
+                            _ = sleep(server.config.heartbeat) =>Message::Ping.send(&mut w).await?
+                        }
+                    }
+                },
+            ));
         }
         _ => {
-            let msg = Message::Error("Master Scret Error".to_string());
+            let msg = Message::Error("Master Secret Error".to_string());
             connect.send(&msg).await.ok();
         }
     }
@@ -132,7 +128,7 @@ async fn run_worker(server: Server, listen: TcpListener) -> io::Result<()> {
         while let Ok(from) = server.accept_rx.try_recv() {
             match !from.is_timeout(server.config.timeout) {
                 true => return Ok(forward(from.tcp, tcp)),
-                false => eprintln!("│{:21?}│ ⇨ Accept Wati Timeout", from.addr),
+                false => eprintln!("│{:21?}│ ⇨ Accept Wait Timeout", from.addr),
             }
         }
         eprintln!("│{:21?}│ ⇨ Worker Ready But No Accept", addr)
