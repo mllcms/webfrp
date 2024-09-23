@@ -7,6 +7,7 @@ use tokio::{
     net::TcpListener,
     time::sleep,
 };
+use tokio::task::JoinSet;
 
 use common::{config::Config, connect::Connect, forward, message::Message};
 
@@ -67,9 +68,10 @@ pub async fn master(server: Server, mut connect: Connect) {
             connect.send(&Message::Worker(addr)).await.ok();
             println!("│{:21?}│ WorkerListen", addr);
 
-            connect.join_set.spawn(run_worker(server.clone(), listen));
+            let mut join_set = JoinSet::new();
+            join_set.spawn(run_worker(server.clone(), listen));
             tokio::spawn(async move {
-                connect.split("⇨ Master".to_string(), |mut r| async move {
+                connect.split("⇨ Master", join_set,|mut r| async move {
                     let mut buf = [0; 256];
                     while let Ok(true) = r.read(&mut buf).await.map(|n| n > 1) {}
                     Err(io::Error::other("Connect Disconnected"))
