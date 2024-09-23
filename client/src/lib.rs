@@ -8,7 +8,9 @@ use tokio::{
     task::JoinSet,
 };
 
+#[derive(Deref)]
 pub struct ClientInner {
+    #[deref]
     config: Config,
 }
 
@@ -23,22 +25,16 @@ impl Client {
     }
 
     pub async fn run(&self) -> io::Result<()> {
-        let mut connect = tokio::select! {
-            tcp = TcpStream::connect(&self.config.server_addr) => match tcp {
-                Ok(tcp) => Connect::new(tcp,self.config.server_addr),
-                Err(err) => return Ok(eprintln!("Master Connect Failed: {err}"))
-            },
-            _ = tokio::time::sleep(self.config.timeout) => return Ok(eprintln!("Master Connect Timeout"))
-        };
+        let mut connect = Connect::connect(self.server_addr, self.timeout).await?;
 
-        println!("│{:21?}│ ClientConnect", self.config.client_addr);
-        println!("│{:21?}│ MasterConnect", self.config.server_addr);
+        println!("│{:21?}│ ClientConnect", self.client_addr);
+        println!("│{:21?}│ MasterConnect", self.server_addr);
 
-        let secret = Message::Master(self.config.secret.clone());
+        let secret = Message::Master(self.secret.clone());
         connect.send(&secret).await?;
         let client = self.clone();
         let join_set = JoinSet::new();
-        let heartbeat = client.config.heartbeat;
+        let heartbeat = client.heartbeat;
 
         let reader = |r| async move {
             let mut reader = BufReader::new(r);
@@ -72,7 +68,7 @@ impl Client {
                 };
             }
         };
-        
+
         connect.split("Client", join_set, reader, writer).await;
         Ok(())
     }
@@ -85,7 +81,7 @@ pub async fn new_worker(client: Client, addr: Arc<SocketAddr>) {
             Err(err) => return eprintln!("Worker Connect Error: {err}"),
         };
 
-        match TcpStream::connect(client.config.client_addr).await {
+        match TcpStream::connect(client.client_addr).await {
             Ok(local) => forward(remote, local),
             Err(err) => {
                 remote.write_all(Client::NO_CLIENT).await.ok();

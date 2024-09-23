@@ -10,7 +10,9 @@ use tokio::{
     time::sleep,
 };
 
+#[derive(Deref)]
 pub struct ServerInner {
+    #[deref]
     config: Config,
     master_tx: Sender<Message>,
     master_rx: Receiver<Message>,
@@ -36,10 +38,10 @@ impl Server {
         }))
     }
     pub async fn run(&self) -> io::Result<()> {
-        let ml = TcpListener::bind(&self.config.server_addr).await?;
-        let al = TcpListener::bind(&self.config.accept_addr).await?;
-        println!("│{:21?}│ AcceptListen", self.config.accept_addr);
-        println!("│{:21?}│ MasterLister", self.config.server_addr);
+        let ml = TcpListener::bind(&self.server_addr).await?;
+        let al = TcpListener::bind(&self.accept_addr).await?;
+        println!("│{:21?}│ AcceptListen", self.accept_addr);
+        println!("│{:21?}│ MasterLister", self.server_addr);
 
         loop {
             tokio::select! {
@@ -62,9 +64,10 @@ pub async fn master(server: Server, mut connect: Connect) {
     let n = connect.read(&mut buf).await.unwrap();
 
     match serde_json::from_slice::<Message>(&buf[..n]) {
-        Ok(Message::Master(secret)) if secret == server.config.secret => {
+        Ok(Message::Master(secret)) if secret == server.secret => {
             let (addr, listen) = new_worker(server.clone()).await.unwrap();
             connect.send(&Message::Worker(addr)).await.ok();
+            println!("│{:21?}│ ⇦ Master", connect.addr);
             println!("│{:21?}│ WorkerListen", addr);
 
             let mut join_set = JoinSet::new();
@@ -81,7 +84,7 @@ pub async fn master(server: Server, mut connect: Connect) {
                 loop {
                     tokio::select! {
                         Ok(msg) = master_rx.recv() =>msg.send(&mut w).await?,
-                        _ = sleep(server.config.heartbeat) =>Message::Ping.send(&mut w).await?
+                        _ = sleep(server.heartbeat) =>Message::Ping.send(&mut w).await?
                     }
                 }
             };
@@ -98,11 +101,11 @@ pub async fn master(server: Server, mut connect: Connect) {
 /// 处理访问
 pub async fn accept(server: Server, mut connect: Connect) {
     match server.master_rx.receiver_count() {
-        1..=2 => {
-            println!("│{:21?}│ ⇦ Accept No Master Connect", connect.addr);
+        1 => {
+            println!("│{:21?}│ ⇨ Accept Ready But No Master", connect.addr);
             connect.write(Server::NO_MASTER).await.ok();
         }
-        3 => {
+        2 => {
             server.master_tx.send(Message::New).await.unwrap();
             server.accept_tx.send(connect).await.unwrap();
         }
@@ -112,7 +115,7 @@ pub async fn accept(server: Server, mut connect: Connect) {
 
 async fn new_worker(server: Server) -> io::Result<(SocketAddr, TcpListener)> {
     for port in 0xAAAA..0xFFFF {
-        let addr = SocketAddr::new(server.config.server_addr.ip(), port);
+        let addr = SocketAddr::new(server.server_addr.ip(), port);
         if let Ok(listen) = TcpListener::bind(addr).await {
             return Ok((addr, listen));
         }
@@ -125,12 +128,11 @@ async fn run_worker(server: Server, listen: TcpListener) -> io::Result<()> {
         let server = server.clone();
         let (tcp, addr) = listen.accept().await?;
         while let Ok(from) = server.accept_rx.try_recv() {
-            match !from.is_timeout(server.config.timeout) {
-                true => {
-                    forward(from.tcp, tcp);
-                    return Ok(());
-                }
-                false => eprintln!("│{:21?}│ ⇨ Accept Wait Timeout", from.addr),
+            if from.is_timeout(server.timeout) {
+                eprintln!("│{:21?}│ ⇨ Accept Wait Timeout", from.addr)
+            } else {
+                forward(from.tcp, tcp);
+                break;
             }
         }
         eprintln!("│{:21?}│ ⇨ Worker Ready But No Accept", addr)

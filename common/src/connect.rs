@@ -34,6 +34,13 @@ impl Connect {
         Self { tcp, addr, instant }
     }
 
+    pub async fn connect(addr: SocketAddr, timeout: Duration) -> io::Result<Self> {
+        tokio::select! {
+            tcp = TcpStream::connect(&addr) => Ok(Connect::new(tcp?,addr)),
+            _ = tokio::time::sleep(timeout) => Err(io::Error::other("Connect Timeout"))
+        }
+    }
+
     pub fn is_timeout(&self, timeout: Duration) -> bool {
         self.instant.elapsed() > timeout
     }
