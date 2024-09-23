@@ -31,7 +31,7 @@ pub fn from_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: Deserializer<'de>,
 {
-    u64::deserialize(deserializer).map(|n| Duration::from_millis(n))
+    u64::deserialize(deserializer).map(Duration::from_millis)
 }
 
 pub fn as_duration<S: Serializer>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error> {

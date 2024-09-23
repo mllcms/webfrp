@@ -5,7 +5,7 @@ use common::{config::Config, connect::Connect, forward, message::Message};
 use derive_more::derive::Deref;
 use tokio::{
     io::{self, AsyncReadExt},
-    net::TcpListener,
+    net::{tcp::OwnedReadHalf, TcpListener},
     task::JoinSet,
     time::sleep,
 };
@@ -69,24 +69,24 @@ pub async fn master(server: Server, mut connect: Connect) {
 
             let mut join_set = JoinSet::new();
             join_set.spawn(run_worker(server.clone(), listen));
-            tokio::spawn(connect.split(
-                "⇨ Master",
-                join_set,
-                |mut r| async move {
-                    let mut buf = [0; 256];
-                    while let Ok(true) = r.read(&mut buf).await.map(|n| n > 1) {}
-                    Err(io::Error::other("Connect Disconnected"))
-                },
-                |mut w| async move {
-                    let master_rx = server.master_rx.clone();
-                    loop {
-                        tokio::select! {
-                            Ok(msg) = master_rx.recv() =>msg.send(&mut w).await?,
-                            _ = sleep(server.config.heartbeat) =>Message::Ping.send(&mut w).await?
-                        }
+
+            let reader = |mut r: OwnedReadHalf| async move {
+                let mut buf = [0; 256];
+                while let Ok(true) = r.read(&mut buf).await.map(|n| n > 1) {}
+                Err(io::Error::other("Connect Disconnected"))
+            };
+
+            let writer = |mut w| async move {
+                let master_rx = server.master_rx.clone();
+                loop {
+                    tokio::select! {
+                        Ok(msg) = master_rx.recv() =>msg.send(&mut w).await?,
+                        _ = sleep(server.config.heartbeat) =>Message::Ping.send(&mut w).await?
                     }
-                },
-            ));
+                }
+            };
+
+            tokio::spawn(connect.split("⇨ Master", join_set, reader, writer));
         }
         _ => {
             let msg = Message::Error("Master Secret Error".to_string());
@@ -113,12 +113,11 @@ pub async fn accept(server: Server, mut connect: Connect) {
 async fn new_worker(server: Server) -> io::Result<(SocketAddr, TcpListener)> {
     for port in 0xAAAA..0xFFFF {
         let addr = SocketAddr::new(server.config.server_addr.ip(), port);
-        match TcpListener::bind(addr).await {
-            Ok(listen) => return Ok((addr, listen)),
-            Err(_) => {}
-        };
+        if let Ok(listen) = TcpListener::bind(addr).await {
+            return Ok((addr, listen));
+        }
     }
-    Err(io::Error::other("Listen Worker Faild"))
+    Err(io::Error::other("Listen Worker Failed"))
 }
 
 async fn run_worker(server: Server, listen: TcpListener) -> io::Result<()> {
@@ -127,7 +126,10 @@ async fn run_worker(server: Server, listen: TcpListener) -> io::Result<()> {
         let (tcp, addr) = listen.accept().await?;
         while let Ok(from) = server.accept_rx.try_recv() {
             match !from.is_timeout(server.config.timeout) {
-                true => return Ok(forward(from.tcp, tcp)),
+                true => {
+                    forward(from.tcp, tcp);
+                    return Ok(());
+                }
                 false => eprintln!("│{:21?}│ ⇨ Accept Wait Timeout", from.addr),
             }
         }
