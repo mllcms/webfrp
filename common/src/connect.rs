@@ -70,7 +70,7 @@ impl Connect {
         let (reader, writer) = self.tcp.into_split();
         join_set.spawn(r(reader));
         join_set.spawn(w(writer));
-        if let Some(Err(err)) = join_set.join_next().await {
+        if let Some(Ok(Err(err))) = join_set.join_next().await {
             eprintln!("│{:21?}│ {name} {err}", self.addr)
         }
     }
