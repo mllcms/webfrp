@@ -1,4 +1,5 @@
 pub mod config;
+pub mod connect;
 pub mod message;
 
 use tokio::{io, net::TcpStream};

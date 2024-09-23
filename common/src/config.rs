@@ -1,7 +1,6 @@
-use std::{fs, net::SocketAddr, time::Duration};
+use std::{fs, net::SocketAddr, process, time::Duration};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use tokio::io::{self};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -16,9 +15,15 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn load(path: &str) -> io::Result<Self> {
-        let data = fs::read_to_string(path)?;
-        toml::from_str(&data).map_err(io::Error::other)
+    pub fn load(path: &str) -> Self {
+        match fs::read_to_string(path) {
+            Ok(data) => match toml::from_str::<Self>(&data) {
+                Ok(res) => return res,
+                Err(err) => eprintln!("Serialization failed: {err}"),
+            },
+            Err(err) => eprintln!("Readfile [{path}] failed: {err}"),
+        }
+        process::exit(0)
     }
 }
 
