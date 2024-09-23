@@ -1,0 +1,6 @@
+secret = "jasdfkf"
+timeout = 20000
+heartbeat = 5000
+client_addr = "0.0.0.0:8888"
+server_addr = "0.0.0.0:5555"
+accept_addr = "0.0.0.0:8000"
