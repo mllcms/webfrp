@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use async_channel::{unbounded, Receiver, Sender};
-use common::{config::Config, connect::Connect, forward, message::Message};
+use common::{config::Config, connect::Connect, duplex, message::Message};
 use derive_more::derive::Deref;
 use tokio::{
     io::{self, AsyncReadExt},
@@ -45,8 +45,8 @@ impl Server {
 
         loop {
             tokio::select! {
-                conn = Connect::from_tcp(&ml) => tokio::spawn(master(self.clone(),conn?)),
-                conn = Connect::from_tcp(&al) => tokio::spawn(accept(self.clone(),conn?)),
+                tcp = ml.accept() => tokio::spawn(master(self.clone(),tcp?.into())),
+                tcp = al.accept() => tokio::spawn(accept(self.clone(),tcp?.into())),
             };
         }
     }
@@ -67,8 +67,8 @@ pub async fn master(server: Server, mut connect: Connect) {
         Ok(Message::Master(secret)) if secret == server.secret => {
             let (addr, listen) = new_worker(server.clone()).await.unwrap();
             connect.send(&Message::Worker(addr)).await.ok();
-            println!("│{:21?}│ ⇦ Master", connect.addr);
             println!("│{:21?}│ WorkerListen", addr);
+            println!("│{:21?}│ ⇦ Master", connect.addr);
 
             let mut join_set = JoinSet::new();
             join_set.spawn(run_worker(server.clone(), listen));
@@ -124,15 +124,15 @@ async fn new_worker(server: Server) -> io::Result<(SocketAddr, TcpListener)> {
 }
 
 async fn run_worker(server: Server, listen: TcpListener) -> io::Result<()> {
-    loop {
+    'l: loop {
         let server = server.clone();
         let (tcp, addr) = listen.accept().await?;
         while let Ok(from) = server.accept_rx.try_recv() {
             if from.is_timeout(server.timeout) {
                 eprintln!("│{:21?}│ ⇨ Accept Wait Timeout", from.addr)
             } else {
-                forward(from.tcp, tcp);
-                break;
+                duplex(from.tcp, tcp);
+                continue 'l;
             }
         }
         eprintln!("│{:21?}│ ⇨ Worker Ready But No Accept", addr)
