@@ -1,6 +1,6 @@
 use std::{io, net::SocketAddr, sync::Arc};
 
-use common::{config::Config, connect::Connect, forward, message::Message};
+use common::{config::Config, connect::Connect, duplex, message::Message};
 use derive_more::derive::Deref;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -82,7 +82,7 @@ pub async fn new_worker(client: Client, addr: Arc<SocketAddr>) {
         };
 
         match TcpStream::connect(client.client_addr).await {
-            Ok(local) => forward(remote, local),
+            Ok(local) => duplex(remote, local),
             Err(err) => {
                 remote.write_all(Client::NO_CLIENT).await.ok();
                 remote.flush().await.ok();
