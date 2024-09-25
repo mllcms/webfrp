@@ -6,7 +6,6 @@ use derive_more::derive::Deref;
 use tokio::{
     io::{self, AsyncReadExt},
     net::{tcp::OwnedReadHalf, TcpListener},
-    task::JoinSet,
     time::sleep,
 };
 
@@ -70,12 +69,12 @@ pub async fn master(server: Server, mut connect: Connect) {
             println!("│{:21?}│ WorkerListen", addr);
             println!("│{:21?}│ ⇦ Master", connect.addr);
 
-            let mut join_set = JoinSet::new();
-            join_set.spawn(run_worker(server.clone(), listen));
+            let handle = tokio::spawn(run_worker(server.clone(), listen));
 
             let reader = |mut r: OwnedReadHalf| async move {
                 let mut buf = [0; 256];
                 while let Ok(true) = r.read(&mut buf).await.map(|n| n > 1) {}
+                handle.abort();
                 Err(io::Error::other("Connect Disconnected"))
             };
 
@@ -83,13 +82,13 @@ pub async fn master(server: Server, mut connect: Connect) {
                 let master_rx = server.master_rx.clone();
                 loop {
                     tokio::select! {
-                        Ok(msg) = master_rx.recv() =>msg.send(&mut w).await?,
-                        _ = sleep(server.heartbeat) =>Message::Ping.send(&mut w).await?
+                        Ok(msg) = master_rx.recv() => msg.send(&mut w).await?,
+                        _ = sleep(server.heartbeat) => Message::Ping.send(&mut w).await?
                     }
                 }
             };
 
-            tokio::spawn(connect.split("⇨ Master", join_set, reader, writer));
+            tokio::spawn(connect.split("⇨ Master".to_string(), reader, writer));
         }
         _ => {
             let msg = Message::Error("Master Secret Error".to_string());
@@ -131,7 +130,7 @@ async fn run_worker(server: Server, listen: TcpListener) -> io::Result<()> {
             if from.is_timeout(server.timeout) {
                 eprintln!("│{:21?}│ ⇨ Accept Wait Timeout", from.addr)
             } else {
-                duplex(from.tcp, tcp);
+                duplex(from.tcp, tcp, server.timeout);
                 continue 'l;
             }
         }

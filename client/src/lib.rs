@@ -2,11 +2,7 @@ use std::{io, net::SocketAddr, sync::Arc};
 
 use common::{config::Config, connect::Connect, duplex, message::Message};
 use derive_more::derive::Deref;
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    net::TcpStream,
-    task::JoinSet,
-};
+use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 #[derive(Deref)]
 pub struct ClientInner {
@@ -26,50 +22,26 @@ impl Client {
 
     pub async fn run(&self) -> io::Result<()> {
         let mut connect = Connect::connect(self.server_addr, self.timeout).await?;
+        Message::Master(self.secret.clone()).send(&mut connect.tcp).await?;
 
         println!("│{:21?}│ ClientConnect", self.client_addr);
         println!("│{:21?}│ MasterConnect", self.server_addr);
 
-        let secret = Message::Master(self.secret.clone());
-        connect.send(&secret).await?;
-        let client = self.clone();
-        let join_set = JoinSet::new();
-        let heartbeat = client.heartbeat;
+        let mut addr: Arc<SocketAddr> = Arc::new("0.0.0.0:65535".parse().unwrap());
+        let mut message = connect.listen_message("Master".to_string(), self.heartbeat).await;
 
-        let reader = |r| async move {
-            let mut reader = BufReader::new(r);
-            let mut addr: Arc<SocketAddr> = Arc::new("0.0.0.0:65535".parse().unwrap());
-            let mut buf = String::new();
-
-            while let Ok(true) = reader.read_line(&mut buf).await.map(|n| n > 1) {
-                match Message::from_buf(buf.as_bytes()) {
-                    Err(err) => eprintln!("Serialization Failed:{err} Content:{buf}",),
-                    Ok(msg) => match msg {
-                        Message::New => new_worker(client.clone(), addr.clone()).await,
-                        Message::Msg(msg) => println!("{msg}"),
-                        Message::Worker(a) => {
-                            eprintln!("│{:21?}│ WorkerConnect", a);
-                            addr = Arc::new(a)
-                        }
-                        Message::Error(err) => return Ok(eprintln!("{err}")),
-                        _ => {}
-                    },
-                };
-                buf.truncate(0)
+        while let Some(msg) = message.recv().await {
+            match msg {
+                Message::New => new_worker(self.clone(), addr.clone()).await,
+                Message::Msg(msg) => println!("{msg}"),
+                Message::Worker(a) => {
+                    eprintln!("│{:21?}│ WorkerConnect", a);
+                    addr = Arc::new(a)
+                }
+                Message::Error(err) => return Ok(eprintln!("{err}")),
+                _ => {}
             }
-            Ok(eprintln!("Master Connect Disconnected"))
-        };
-
-        let writer = |mut w| async move {
-            loop {
-                tokio::time::sleep(heartbeat).await;
-                if let Err(err) = Message::Pong.send(&mut w).await {
-                    return Ok(eprintln!("Master Connect Disconnected: {err}"));
-                };
-            }
-        };
-
-        connect.split("Client", join_set, reader, writer).await;
+        }
         Ok(())
     }
 }
@@ -82,7 +54,7 @@ pub async fn new_worker(client: Client, addr: Arc<SocketAddr>) {
         };
 
         match TcpStream::connect(client.client_addr).await {
-            Ok(local) => duplex(remote, local),
+            Ok(local) => duplex(remote, local, client.timeout),
             Err(err) => {
                 remote.write_all(Client::NO_CLIENT).await.ok();
                 remote.flush().await.ok();

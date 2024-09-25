@@ -9,11 +9,7 @@ use salvo::{
     http::{uri::Scheme, Version},
     Listener,
 };
-use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    net::TcpStream,
-    task::JoinSet,
-};
+use tokio::net::TcpStream;
 
 #[derive(Deref)]
 pub struct FrpListen {
@@ -85,50 +81,27 @@ impl FrpListen {
     pub async fn run(&self) -> io::Result<()> {
         let tx = self.tx.clone();
         let mut connect = Connect::connect(self.server_addr, self.timeout).await?;
+        Message::Master(self.secret.clone()).send(&mut connect.tcp).await?;
 
-        println!("│{:21?}│ ClientConnect", self.config.client_addr);
-        println!("│{:21?}│ MasterConnect", self.config.server_addr);
+        println!("│{:21?}│ ClientConnect", self.client_addr);
+        println!("│{:21?}│ MasterConnect", self.server_addr);
 
-        let secret = Message::Master(self.config.secret.clone());
-        connect.send(&secret).await?;
-        let join_set = JoinSet::new();
-
-        let heartbeat = self.heartbeat;
-        let reader = |r| async move {
-            let mut reader = BufReader::new(r);
+        let mut message = connect.listen_message("Master".to_string(), self.heartbeat).await;
+        tokio::spawn(async move {
             let mut addr: Arc<std::net::SocketAddr> = Arc::new("0.0.0.0:65535".parse().unwrap());
-            let mut buf = String::new();
-
-            while let Ok(true) = reader.read_line(&mut buf).await.map(|n| n > 1) {
-                match Message::from_buf(buf.as_bytes()) {
-                    Err(err) => eprintln!("Serialization Failed:{err} Content:{buf}",),
-                    Ok(msg) => match msg {
-                        Message::New => new_worker(addr.clone(), tx.clone()).await,
-                        Message::Msg(msg) => println!("{msg}"),
-                        Message::Worker(a) => {
-                            eprintln!("│{:21?}│ WorkerConnect", a);
-                            addr = Arc::new(a)
-                        }
-                        Message::Error(err) => return Ok(eprintln!("{err}")),
-                        _ => {}
-                    },
-                };
-                buf.truncate(0)
+            while let Some(msg) = message.recv().await {
+                match msg {
+                    Message::New => new_worker(addr.clone(), tx.clone()),
+                    Message::Msg(msg) => println!("{msg}"),
+                    Message::Worker(a) => {
+                        eprintln!("│{:21?}│ WorkerConnect", a);
+                        addr = Arc::new(a)
+                    }
+                    Message::Error(err) => return eprintln!("{err}"),
+                    _ => {}
+                }
             }
-            Ok(eprintln!("Master Connect Disconnected"))
-        };
-
-        let writer = move |mut w| async move {
-            loop {
-                tokio::time::sleep(heartbeat).await;
-                if let Err(err) = Message::Pong.send(&mut w).await {
-                    return Ok(eprintln!("Master Connect Disconnected: {err}"));
-                };
-            }
-        };
-
-        tokio::spawn(async move { connect.split("Client", join_set, reader, writer).await });
-
+        });
         Ok(())
     }
 }
@@ -143,7 +116,7 @@ impl Listener for FrpListen {
 
 impl Unpin for FrpListen {}
 
-pub async fn new_worker(addr: Arc<std::net::SocketAddr>, tx: Sender<(TcpStream, SocketAddr)>) {
+pub fn new_worker(addr: Arc<std::net::SocketAddr>, tx: Sender<(TcpStream, SocketAddr)>) {
     tokio::spawn(async move {
         let remote = match TcpStream::connect(*addr).await {
             Ok(v) => v,

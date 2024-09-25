@@ -10,3 +10,7 @@ derive_more = { version = "1.0.0", features = ["deref"] }
 toml = "0.8.19"
 serde_json = "1.0.128"
 async-channel = "2.3.1"
+
+[profile.release]
+lto = true
+strip = true
