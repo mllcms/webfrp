@@ -6,11 +6,12 @@ use std::{
 };
 
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpListener, TcpStream,
     },
+    sync::mpsc::{unbounded_channel, UnboundedReceiver},
     task::JoinSet,
 };
 
@@ -63,22 +64,48 @@ impl Connect {
     }
 
     /// 读写分离
-    /// 传入 join_set 第一个任务退出所有任务都退出
-    pub async fn split<R, W>(
-        self,
-        name: &str,
-        mut join_set: JoinSet<io::Result<()>>,
-        r: impl FnOnce(OwnedReadHalf) -> R,
-        w: impl FnOnce(OwnedWriteHalf) -> W,
-    ) where
+    pub async fn split<R, W>(self, id: String, r: impl FnOnce(OwnedReadHalf) -> R, w: impl FnOnce(OwnedWriteHalf) -> W)
+    where
         R: Future<Output = io::Result<()>> + Send + 'static,
         W: Future<Output = io::Result<()>> + Send + 'static,
     {
         let (reader, writer) = self.tcp.into_split();
+        let mut join_set = JoinSet::new();
         join_set.spawn(r(reader));
         join_set.spawn(w(writer));
         if let Some(Ok(Err(err))) = join_set.join_next().await {
-            eprintln!("│{:21?}│ {name} {err}", self.addr)
+            eprintln!("│{:21?}│ {id} {err}", self.addr)
         }
+    }
+
+    pub async fn listen_message(self, id: String, heartbeat: Duration) -> UnboundedReceiver<Message> {
+        let (tx, rx) = unbounded_channel();
+        let name = id.clone();
+        let reader = |r| async move {
+            let mut reader = BufReader::new(r);
+            let mut buf = String::new();
+
+            while let Ok(true) = reader.read_line(&mut buf).await.map(|n| n > 1) {
+                match Message::from_buf(buf.as_bytes()) {
+                    Err(err) => eprintln!("Serialization Failed:{err} Content:{buf}",),
+                    Ok(msg) => tx.send(msg).unwrap(),
+                };
+                buf.truncate(0)
+            }
+            Ok(eprintln!("{name} Connect Disconnected"))
+        };
+
+        let name = id.clone();
+        let writer = move |mut w| async move {
+            loop {
+                tokio::time::sleep(heartbeat).await;
+                if let Err(err) = Message::Pong.send(&mut w).await {
+                    return Ok(eprintln!("{name} Connect Disconnected: {err}"));
+                };
+            }
+        };
+
+        tokio::spawn(self.split(id, reader, writer));
+        rx
     }
 }
